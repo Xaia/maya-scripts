@@ -289,6 +289,7 @@ class ArnoldCurvesTool(QtWidgets.QDialog):
                 import random
                 safe_set_attr(shader, "emission", 1.0)
                 safe_set_attr(shader, "specular", 0.0)
+                safe_set_attr(shader, "base", 0.0)
                 
                 # Generate highly saturated colors by ensuring at least one channel is at max
                 # and others vary, avoiding muddy middle-range colors

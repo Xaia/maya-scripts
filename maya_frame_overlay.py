@@ -632,7 +632,12 @@ class FramingOverlay(QtWidgets.QWidget):
         painter.drawRect(rect.adjusted(inset_x, inset_y, -inset_x, -inset_y))
 
     def draw_golden_spiral(self, painter, rect):
-        """Logarithmic spiral whose radius grows by phi every quarter turn."""
+        """Quarter-circle approximation in nested golden rectangles.
+
+        Build in a golden rectangle, then fit to the selected framing.
+        Portrait frames rotate the construction so the first arc follows
+        the long dimension. Non-golden framing scales the guide to fit.
+        """
         if rect.isEmpty():
             return
         painter.save()
@@ -641,26 +646,43 @@ class FramingOverlay(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.NoBrush)
 
         phi = (1.0 + math.sqrt(5.0)) / 2.0
-        growth = math.log(phi) / (math.pi / 2.0)
-        center_x = rect.left() + rect.width() / phi
-        center_y = rect.top() + rect.height() * (1.0 - 1.0 / phi)
-        theta_min = -4.5 * math.pi
-        theta_max = math.pi
-        max_radius = min(rect.width(), rect.height()) * 0.85
         path = QtGui.QPainterPath()
-        steps = 400
-        for i in range(steps + 1):
-            theta = theta_min + (theta_max - theta_min) * i / float(steps)
-            radius = max_radius * math.exp(growth * (theta - theta_max))
-            point = QtCore.QPointF(
-                center_x + radius * math.cos(theta),
-                center_y - radius * math.sin(theta)
-            )
-            if i == 0:
-                path.moveTo(point)
+        x, y, width, height = 0.0, 0.0, phi, 1.0
+        for i in range(16):
+            direction = i % 4
+            if direction == 0:  # Remove the left square.
+                side = height
+                cx, cy = x + side, y + height
+                x += side
+                width -= side
+            elif direction == 1:  # Remove the top square.
+                side = width
+                cx, cy = x, y + side
+                y += side
+                height -= side
+            elif direction == 2:  # Remove the right square.
+                side = height
+                cx, cy = x + width - side, y
+                width -= side
             else:
-                path.lineTo(point)
-        painter.drawPath(path)
+                side = width  # Remove the bottom square.
+                cx, cy = x + width, y + height - side
+                height -= side
+            arc_rect = QtCore.QRectF(cx - side, cy - side, 2 * side, 2 * side)
+            start_angle = (180 - direction * 90) % 360
+            if i == 0:
+                path.arcMoveTo(arc_rect, start_angle)
+            path.arcTo(arc_rect, start_angle, -90)
+
+        if rect.width() >= rect.height():
+            transform = QtGui.QTransform(
+                rect.width() / phi, 0, 0, rect.height(), rect.left(), rect.top()
+            )
+        else:
+            transform = QtGui.QTransform(
+                0, -rect.height() / phi, rect.width(), 0, rect.left(), rect.bottom()
+            )
+        painter.drawPath(transform.map(path))
         painter.restore()
 
     # --------------------------------------------------------

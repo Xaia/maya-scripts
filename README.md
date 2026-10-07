@@ -23,6 +23,16 @@ Creates circular ramp texture nodes with alternating black and white concentric 
 ### **mat_to_group.py**
 Automatically organizes selected meshes into groups based on their assigned materials. Creates a material hierarchy under each object's top-level group, making it easy to manage and organize complex scenes by material assignment. Useful for managing large asset trees.
 
+### **maya_frame_overlay.py**
+Non-destructive viewport framing overlay for Maya with PySide2 or PySide6. Uses the current render resolution and camera overscan to draw alternate framing inside the render frame without changing scene settings. Features include:
+- Landscape, portrait, square, custom, and Golden Ratio (1.618:1) framing presets
+- Composition dropdown: None, Rule of thirds, Golden Ratio Grid, Golden Spiral, Golden Triangles, or Diagonal Method
+- Independent Center marker, Action Safe (90%), and Title Safe (80%) toggles
+- Guides clipped to the selected framing rectangle for every aspect ratio
+- Adjustable framing matte, render-frame display, and attachment to the active viewport
+
+Run the script in Maya's Python Script Editor to open the tool, or import the module from your Maya scripts folder. Call `maya_frame_overlay.show_framing_window()` to reopen it.
+
 ### **materials_to_object_set.py**
 Collects all materials assigned to selected meshes (or groups) into a Maya Object Set. Includes an interactive UI to:
 - Scan selected geometry or groups

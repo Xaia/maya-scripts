@@ -5,10 +5,12 @@ aiStandardSurface Converter (robust + simple)
 - Preserve key connections
 - Update texture color spaces ONLY for textures feeding the converted shader(s),
   based on the FILE PATH:
-      *_d*  -> sRGB Texture
+      Globe Plants unsuffixed color / other *_d* -> sRGB Texture
       others -> Raw
 - Skip references
 - Shared textures are localized (*_LOCAL) and only the converted networks are rewired
+- Globe Plants: color -> aiColorCorrect, R -> aiRange, A -> opacity,
+  N -> aiNormalMap, B -> bump2d, D -> shading-group displacement
 """
 
 from __future__ import print_function
@@ -21,6 +23,10 @@ import re
 WINDOW_NAME = "ASS_Converter_UI"
 LOG_FIELD = WINDOW_NAME + "_logField"
 DEFAULT_SKIP_SHADERS = set(["lambert1", "particleCloud1", "shaderGlow1"])
+GLOBEPLANTS_MAPS_DIR = r"V:\09_3D_Models\globeplants\bundle31\GBPLB0031_Bundle31_Alaskan+Plants_FBX\maps"
+TEXTURE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".tga", ".bmp", ".tx")
+MAP_ROLES = {"r": "roughness", "a": "alpha", "n": "normal", "d": "displacement", "b": "bump"}
+GLOBEPLANTS_TEXTURE_DIRS = set()
 
 # Preferred/likely input color spaces; picked if present in current OCIO
 PREFERRED_SRGB_SPACES = [
@@ -105,8 +111,94 @@ def get_node_colorspace_attr(node):
     return None
 
 def is_diffuse_from_path(path):
+    # Here '_D' means displacement, while unsuffixed images are color.
+    filename = texture_basename(path)
+    if (os.path.normcase(os.path.dirname(path or "")) in GLOBEPLANTS_TEXTURE_DIRS
+            or os.path.normcase(os.path.dirname(path or "")) == os.path.normcase(GLOBEPLANTS_MAPS_DIR)
+            or os.path.isfile(os.path.join(GLOBEPLANTS_MAPS_DIR, filename))):
+        return globeplants_texture_key(filename)[1] == "color"
     stem = os.path.splitext(os.path.basename(path or ""))[0].lower()
     return bool(DIFFUSE_REGEX.search(stem))
+
+
+def texture_basename(path):
+    return (path or "").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def globeplants_texture_key(path):
+    """Normalize Leaves_1_N, Leaves_N1 and Leaves_A1 to the same set key."""
+    stem = os.path.splitext(texture_basename(path))[0]
+    match = re.match(r"^(.*)_([RANDB])([0-9]*)$", stem, re.IGNORECASE)
+    if match:
+        base, role, number = match.groups()
+        if number:
+            base += "_" + number
+        return base.lower(), MAP_ROLES[role.lower()]
+    return stem.lower(), "color"
+
+
+def index_globeplants_maps(directory):
+    """Exact basename lookup avoids matching generic material names like Leaves_2."""
+    index = {"filenames": {}, "sets": {}}
+    if not os.path.isdir(directory):
+        return index
+    for filename in sorted(os.listdir(directory)):
+        path = os.path.join(directory, filename)
+        if not os.path.isfile(path) or os.path.splitext(filename)[1].lower() not in TEXTURE_EXTENSIONS:
+            continue
+        key, role = globeplants_texture_key(filename)
+        index["filenames"][filename.lower()] = (key, role)
+        index["sets"].setdefault(key, {}).setdefault(role, path)
+    return index
+
+
+def globeplants_maps_for_shader(shader, directory_indexes):
+    """Use the color input first, then other textures in the original network."""
+    candidates = []
+    for attr in ("color", "outColor"):
+        source = find_upstream_connection(shader, attr)
+        if source:
+            node = source.split(".", 1)[0]
+            if cmds.nodeType(node) in ("file", "aiImage"):
+                candidates.append(node)
+            candidates += textures_upstream_of_shaders([node])
+    candidates += textures_upstream_of_shaders([shader])
+    matches = []
+    for texture in candidates:
+        attr = "fileTextureName" if cmds.nodeType(texture) == "file" else "filename"
+        path = get_attr_value(texture, attr) or ""
+        filename = texture_basename(path).lower()
+        # Search beside the connected image. Only missing imported paths use
+        # the supplied bundle directory as a recovery location.
+        directory = os.path.dirname(path)
+        if not os.path.isdir(directory):
+            directory = GLOBEPLANTS_MAPS_DIR
+        if directory not in directory_indexes:
+            directory_indexes[directory] = index_globeplants_maps(directory)
+        index = directory_indexes[directory]
+        entry = index["filenames"].get(filename)
+        if entry and "color" in index["sets"][entry[0]]:
+            matches.append((entry, texture, index, directory, path))
+    if not matches:
+        return {}, None
+    # Prefer the color image as an anchor even when another map was found first.
+    entry, anchor, index, directory, unused_path = next(
+        (m for m in matches if m[0][1] == "color"), matches[0])
+    GLOBEPLANTS_TEXTURE_DIRS.add(os.path.normcase(directory))
+    key = entry[0]
+    maps = dict(index["sets"][key])
+    # Some numbered colors use unnumbered data maps (e.g. Fruit_1 / Fruit_R).
+    shared_key = re.sub(r"_\d+$", "", key)
+    if shared_key != key:
+        for role, path in index["sets"].get(shared_key, {}).items():
+            if role != "color":
+                maps.setdefault(role, path)
+    for connected_entry, texture, connected_index, connected_dir, path in matches:
+        if connected_dir == directory and connected_entry[0] == key and os.path.isfile(path):
+            maps[connected_entry[1]] = path
+    if not any(role != "color" for role in maps):
+        return {}, None
+    return maps, anchor
 
 # --------------------------- Discovery -------------------------------
 
@@ -261,7 +353,7 @@ def attribute_map_for_node(src_node_type):
         "specularColor": "specularColor",
     }
 
-def convert_one_shader(src_shader):
+def convert_one_shader(src_shader, sgs=None, map_index=None):
     """Create aiStandardSurface and transfer key connections/values."""
     if is_arnold_shader(src_shader):
         return None  # skip
@@ -316,7 +408,97 @@ def convert_one_shader(src_shader):
             set_attr_value(new_shader, dst_attr, val)
             log("Copied {}.{} -> {}.{}".format(src_shader, src_attr, new_shader, dst_attr))
 
+    if map_index is not None:
+        maps, anchor = globeplants_maps_for_shader(src_shader, map_index)
+        if maps:
+            wire_globeplants_maps(new_shader, sgs or [], maps, anchor)
+    add_base_color_correction(new_shader)
     return new_shader
+
+
+def new_utility(node_type, shader, suffix):
+    return cmds.shadingNode(node_type, asUtility=True,
+                            name=safe_node_name(shader + "_" + suffix))
+
+
+def add_base_color_correction(shader):
+    source = find_upstream_connection(shader, "baseColor")
+    if not source or cmds.nodeType(source.split(".", 1)[0]) == "aiColorCorrect":
+        return
+    correction = new_utility("aiColorCorrect", shader, "colorCorrect")
+    cmds.connectAttr(source, correction + ".input", f=True)
+    cmds.connectAttr(correction + ".outColor", shader + ".baseColor", f=True)
+
+
+def globeplants_file(shader, role, path, anchor):
+    """New file nodes keep the imported shader and its shared networks intact."""
+    texture = cmds.shadingNode("file", asTexture=True,
+                               name=safe_node_name(shader + "_" + role + "_file"))
+    cmds.setAttr(texture + ".fileTextureName", path.replace("\\", "/"), type="string")
+    if cmds.objExists(texture + ".ignoreColorSpaceFileRules"):
+        cmds.setAttr(texture + ".ignoreColorSpaceFileRules", True)
+    color_space = resolve_colorspace(PREFERRED_SRGB_SPACES if role == "color" else PREFERRED_RAW_SPACES)
+    cmds.setAttr(texture + ".colorSpace", color_space, type="string")
+    places = cmds.listConnections(anchor, s=True, d=False, type="place2dTexture") if anchor else []
+    if places:
+        _connect_place2d_to_tex(places[0], texture)
+    else:
+        place = new_utility("place2dTexture", shader, role + "_place2d")
+        _connect_place2d_to_tex(place, texture)
+    return texture
+
+
+def wire_globeplants_maps(shader, sgs, maps, anchor):
+    textures = {role: globeplants_file(shader, role, path, anchor)
+                for role, path in maps.items()}
+    if "color" in textures:
+        cmds.connectAttr(textures["color"] + ".outColor", shader + ".baseColor", f=True)
+    if "roughness" in textures:
+        remap = new_utility("aiRange", shader, "roughnessRange")
+        # Neutral remapping, ready to adjust in the Attribute Editor.
+        for attr, value in (("inputMin", 0.0), ("inputMax", 1.0),
+                            ("outputMin", 0.0), ("outputMax", 1.0), ("smoothstep", False)):
+            cmds.setAttr(remap + "." + attr, value)
+        cmds.connectAttr(textures["roughness"] + ".outColor", remap + ".input", f=True)
+        cmds.connectAttr(remap + ".outColorR", shader + ".specularRoughness", f=True)
+    if "alpha" in textures:
+        # Alpha images store the mask in RGB; outAlpha may be uniformly white.
+        for channel in "RGB":
+            cmds.connectAttr(textures["alpha"] + ".outColorR", shader + ".opacity" + channel, f=True)
+        disable_opaque_for_sgs(sgs)
+    normal_source = None
+    if "normal" in textures:
+        normal = new_utility("aiNormalMap", shader, "normalMap")
+        cmds.connectAttr(textures["normal"] + ".outColor", normal + ".input", f=True)
+        normal_source = normal + ".outValue"
+    if "bump" in textures:
+        bump = new_utility("bump2d", shader, "bump")
+        cmds.setAttr(bump + ".bumpInterp", 0)
+        cmds.setAttr(bump + ".bumpDepth", 0.1)
+        cmds.connectAttr(textures["bump"] + ".outColorR", bump + ".bumpValue", f=True)
+        if normal_source:
+            cmds.connectAttr(normal_source, bump + ".normalCamera", f=True)
+        normal_source = bump + ".outNormal"
+    if normal_source:
+        cmds.connectAttr(normal_source, shader + ".normalCamera", f=True)
+    if "displacement" in textures:
+        displacement = cmds.shadingNode("displacementShader", asShader=True,
+                                        name=safe_node_name(shader + "_displacement"))
+        cmds.connectAttr(textures["displacement"] + ".outColorR", displacement + ".displacement", f=True)
+        for sg in sgs:
+            if not is_referenced(sg):
+                cmds.connectAttr(displacement + ".displacement", sg + ".displacementShader", f=True)
+    log("Globe Plants maps for {}: {}".format(shader, ", ".join(sorted(maps))))
+
+
+def disable_opaque_for_sgs(sgs):
+    """Arnold needs opaque off on geometry for cutout opacity to render."""
+    for sg in sgs:
+        for member in cmds.sets(sg, q=True) or []:
+            node = member.split(".", 1)[0]
+            for shape in get_all_geo_shapes([node]):
+                if cmds.objExists(shape + ".aiOpaque"):
+                    cmds.setAttr(shape + ".aiOpaque", False)
 
 def reconnect_sgs(old_shader, new_shader, sgs):
     for sg in sgs:
@@ -355,12 +537,29 @@ def textures_upstream_of_shaders(shaders):
 
 def texture_is_shared_outside(tex_node, allowed_shaders_set):
     """True if the texture feeds any surface shader not in allowed_shaders_set."""
-    try:
-        fut = cmds.listHistory(tex_node, future=True, pruneDagObjects=True) or []
-    except Exception:
-        fut = []
-    shaders = {n for n in fut if is_surface_shader_node(n)}
-    return bool(shaders and not shaders.issubset(allowed_shaders_set))
+    # History can cross shading groups / geometry into unrelated materials.
+    # Follow actual outgoing data connections and stop at each surface shader.
+    pending = [tex_node]
+    visited = set()
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        destinations = cmds.listConnections(node, s=False, d=True, p=True) or []
+        for plug in destinations:
+            destination = plug.split(".", 1)[0]
+            if cmds.getAttr(plug, type=True) == "message":
+                continue
+            if is_surface_shader_node(destination):
+                if destination not in allowed_shaders_set:
+                    return True
+                continue
+            if (cmds.nodeType(destination) == "shadingEngine"
+                    or cmds.objectType(destination, isAType="dagNode")):
+                continue
+            pending.append(destination)
+    return False
 
 def _safe_connect(src, dst):
     try:
@@ -393,10 +592,11 @@ def _connect_place2d_to_tex(place2d, tex):
         _safe_connect("{}.outUvFilterSize".format(place2d), "{}.uvFilterSize".format(tex))
 
 def _duplicate_texture_node(node):
-    """Duplicate the texture node (values only), name it *_LOCAL."""
+    """Duplicate a texture with its incoming links, name it *_LOCAL."""
     dup_name = safe_node_name(node + "_LOCAL")
     try:
-        dup_list = cmds.duplicate(node, n=dup_name, ic=False, rr=True)
+        # returnRootsOnly filters out standalone DG nodes such as file textures.
+        dup_list = cmds.duplicate(node, n=dup_name, ic=True)
     except Exception as e:
         log("WARN: Exception duplicating {}: {}".format(node, e))
         return None
@@ -470,11 +670,17 @@ def set_colorspaces_for_textures_for_shaders(shaders):
     for t in textures:
         if is_referenced(t):
             continue
+        path_attr = "fileTextureName" if cmds.nodeType(t) == "file" else "filename"
+        path = get_attr_value(t, path_attr) or ""
+        desired = target_srgb if is_diffuse_from_path(path) else target_raw
+        cs_attr = get_node_colorspace_attr(t)
+        if cs_attr and get_attr_value(t, cs_attr) == desired:
+            # No mutation is needed, so even a genuinely shared node is safe.
+            continue
         if texture_is_shared_outside(t, allowed):
             dup = _duplicate_texture_node(t)
             if not dup:
-                log("WARN: Using original texture {} since duplication failed".format(t))
-                final_targets.append(t)
+                log("WARN: Leaving shared texture {} unchanged since duplication failed".format(t))
                 continue
             _rewire_texture_outputs(t, dup, allowed_graph)
             log("Localized shared texture '{}' -> '{}'".format(t, dup))
@@ -558,24 +764,24 @@ def convert_shaders(only_selected):
     log("Found {} non-aiStandardSurface shader(s) to convert.".format(len(targets)))
 
     new_shaders = []
+    directory_indexes = {}
     cmds.undoInfo(ock=True)
     try:
         for old, sgs in targets:
             try:
-                new = convert_one_shader(old)
+                new = convert_one_shader(old, sgs, directory_indexes)
                 if not new:
                     continue
                 new_shaders.append(new)
                 reconnect_sgs(old, new, sgs)
             except Exception as e:
                 log("ERROR converting {}: {}".format(old, e))
+        if new_shaders:
+            set_colorspaces_for_textures_for_shaders(new_shaders)
     finally:
         cmds.undoInfo(cck=True)
 
     log("Converted {} shader(s).".format(len(new_shaders)))
-
-    if new_shaders:
-        set_colorspaces_for_textures_for_shaders(new_shaders)
 
 # ------------------------------- UI ---------------------------------
 

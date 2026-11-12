@@ -14,7 +14,9 @@ ignored `tests/results/` directory.
 
 The checks cover:
 
-- The existing 11 Studio Renamer planner/transaction tests through its legacy import.
+- Studio Renamer planner/transaction and Arnold naming tests through its legacy import.
+- Full-type suffix detection for every registered MtoA node type; a real Arnold
+  shader network, duplicate types, batch rename, idempotency, shape sync and undo.
 - 14 real-Maya bulk material tests, including assignments, connections and undo.
 - Stand-in mode changes for shapes, multiple groups, all-scene scope and undo.
 - Copy in one mayapy process; paste in separate processes, including different

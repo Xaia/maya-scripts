@@ -27,6 +27,29 @@ Optional shelf button: make a Python shelf button using the same launch snippet.
 
 ## The workflow
 
+### Arnold naming
+
+Arnold nodes use `customname_fullMayaNodeType`, preserving exact spelling and
+capitalization: `oak_aiStandardSurface`, `oak_aiColorCorrect`, `oak_aiRange`,
+or `oak_aiTriplanar`. Types are discovered from the installed MtoA plugin,
+including types missing from the saved suffix registry. The registry is
+refreshed on each scan, so loading Arnold after opening the UI is supported.
+Old abbreviated Arnold mappings in existing JSON files no longer control
+Arnold naming. Other Maya naming rules remain configurable as before.
+
+For a new custom base, enter it and use **Batch Rename** with **Auto by node
+type**. **Auto Suffix** preserves each node's existing custom base while
+replacing its old suffix. **Shader Network** uses the material base followed
+by the exact type for Arnold nodes, without inserting channel labels. Duplicate
+types get a number before the type: `oak_001_aiColorCorrect`. Reapplying Auto
+Suffix does not append the type a second time. Non-Arnold utilities in a shader
+network retain their channel-based names.
+
+The Arnold category includes Arnold shapes automatically. Ordinary transform
+nodes retain their transform conventions (`_lgt`, `_ass`, etc.); synchronized
+Arnold shapes use their full type, for example `key_lgt` with
+`key_aiAreaLight`. Referenced, locked, and default nodes remain protected.
+
 1. Select nodes and choose **Selected**, **Hierarchy**, or **Scene** scope.
 2. Optionally filter by geometry, groups, shaders, Arnold, lights, etc.
 3. Choose an action, for example **Auto Suffix**, **Quick Fix**, **Fix Duplicates**, or **Preview Batch Rename**.

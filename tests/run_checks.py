@@ -21,6 +21,7 @@ def main():
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(ROOT / "scripts"),
                                         str(ROOT / "maya_studio_renamer"), env.get("PYTHONPATH", "")])
     checks = [("renamer", ["-m", "unittest", "discover", "-s", "maya_studio_renamer/tests", "-v"]),
+              ("renamer_arnold", ["tests/renamer_arnold_native.py"]),
               ("bulk", ["tests/test_arnold_bulk_edit.py"]),
               ("standins", ["tests/check_ass_modes.py"])]
     checks.extend((stage, ["tests/module_native.py", stage])

@@ -27,7 +27,7 @@ except ImportError:
     cmds = None
 
 APP_NAME = "Studio Renamer"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # This registry is data, not scattered hard-coded type rules. Unrecognized types
 # are skipped unless their Maya classification clearly identifies a known type.
@@ -283,10 +283,38 @@ class Registry:
         self.known.update(self.data.get("extra_suffixes", []))
         self.known.update(self.data.get("class_suffixes", {}).values())
         self._classification = {}
+        self.arnold_types = {typ for typ in self.data["type_suffixes"]
+                             if re.match(r"^ai[A-Z]", typ)}
+        self.refresh_arnold_types()
+
+    def refresh_arnold_types(self):
+        # Ask the installed plugin, rather than maintaining a partial shader
+        # table. Do not load Arnold merely to open the renamer.
+        try:
+            if cmds is not None and cmds.pluginInfo("mtoa", query=True, loaded=True):
+                self.arnold_types.update(cmds.pluginInfo("mtoa", query=True, dependNode=True) or [])
+        except (RuntimeError, AttributeError):
+            pass
+        self.known.update(self.arnold_types)
 
     def suffix_for(self, node: Node):
+        if self.is_arnold_type(node.node_type):
+            self.known.add(node.node_type)
+            return node.node_type
+        return self.role_for(node)
+
+    def is_arnold_type(self, typ):
+        # Also supports new ai-prefixed nodes not present in old saved JSON.
+        # The capital letter matters: aimConstraint and airField are Maya nodes.
+        return typ in self.arnold_types or bool(re.match(r"^ai[A-Z]", typ))
+
+    def role_for(self, node: Node):
+        """Semantic category is independent of the node's naming suffix."""
         typ = node.node_type
-        explicit = self.data["type_suffixes"].get(typ)
+        # Legacy Arnold mappings describe categories; custom naming mappings
+        # must not change whether a material is recognized as a surface shader.
+        explicit = (DEFAULT_REGISTRY["type_suffixes"].get(typ) if self.is_arnold_type(typ)
+                    else self.data["type_suffixes"].get(typ))
         if explicit:
             return explicit
         if typ in ("transform", "dagContainer"):
@@ -427,14 +455,23 @@ def suffix_filter(node: Node, registry: Registry, category: str) -> bool:
         return True
     if category == "Transforms":
         return node.node_type in ("transform", "joint", "dagContainer")
-    suffix = registry.suffix_for(node)
+    suffix = registry.role_for(node)
+    if category == "Shaders" and registry.is_arnold_type(node.node_type):
+        classification = registry._classify(node.node_type).lower()
+        if any(word in classification for word in ("shader", "texture", "utility")):
+            return True
     groups = {
         "Geometry": {"geo", "srf"}, "Groups": {"grp"},
         "Shaders": {"shd", "sg", "tex", "cc", "nrm", "disp", "rng", "place2d", "ramp", "bump", "mix", "tri", "noise", "layer"},
         "Lights": {"lgt"}, "Curves": {"crv"}, "Arnold": None
     }
     if category == "Arnold":
-        return node.node_type.startswith("ai")
+        if registry.is_arnold_type(node.node_type):
+            return True
+        if node.node_type in ("transform", "dagContainer"):
+            shapes = cmds.listRelatives(node.path, shapes=True, fullPath=True) or []
+            return any(registry.is_arnold_type(cmds.nodeType(shape)) for shape in shapes)
+        return False
     return suffix in groups.get(category, set())
 
 
@@ -534,7 +571,11 @@ class Planner:
             final_bare[node.uid] = name
         for uid, parent_uid, tail in shape_specs:
             node = self.scene.nodes[uid]
-            wanted = final_bare[parent_uid] + tail
+            if self.registry.is_arnold_type(node.node_type):
+                base = replace_suffix(final_bare[parent_uid], "", self.registry.known)
+                wanted = base + "_" + self.registry.suffix_for(node)
+            else:
+                wanted = final_bare[parent_uid] + tail
             name = _collision_base(wanted, used, self.registry.known, padding) if resolve else wanted
             if name in used:
                 status, note = "Conflict", "Shape name already exists"
@@ -553,13 +594,14 @@ class Engine:
         self.scene = None
 
     def scan(self):
+        self.registry.refresh_arnold_types()
         self.scene = SceneIndex(self.registry)
         return self.scene
 
     def _nodes(self, mode, category="All", include_shapes=False, include_history=False):
         if self.scene is None:
             self.scan()
-        return [n for n in self.scene.scope(mode, include_shapes=include_shapes)
+        return [n for n in self.scene.scope(mode, include_shapes=include_shapes or category == "Arnold")
                 if suffix_filter(n, self.registry, category)
                 and (include_history or mode == "Selected" or
                      not self.registry.is_history(n.node_type))]
@@ -666,7 +708,7 @@ class Engine:
         shaders = []
         if typ == "shadingEngine":
             shaders = cmds.listConnections(first + ".surfaceShader", source=True, destination=False) or []
-        elif self.registry.suffix_for(self.scene.nodes[self.scene.uid_for(first)]) == "shd":
+        elif self.registry.role_for(self.scene.nodes[self.scene.uid_for(first)]) == "shd":
             shaders = [first]
         else:
             sgs = cmds.listConnections(first, type="shadingEngine") or []
@@ -723,7 +765,8 @@ class Engine:
             raise ValueError("Shader network traversal reached the 500-node safety limit.")
         # Shared nodes are not renamed. A node with consumers outside the captured
         # network (other than the selected root shader) is conservatively skipped.
-        intents = [Intent(shader_uid, material_name + "_shd", "Surface shader")]
+        root_suffix = self.registry.suffix_for(self.scene.nodes[shader_uid])
+        intents = [Intent(shader_uid, material_name + "_" + root_suffix, "Surface shader")]
         for uid, channel in upstream.items():
             if uid == shader_uid:
                 continue
@@ -745,7 +788,9 @@ class Engine:
             if shared:
                 continue
             label = sanitize_name(channel) if channel else "utility"
-            intents.append(Intent(uid, "%s_%s_%s" % (material_name, label, suffix), "Upstream shader node"))
+            wanted = (material_name + "_" + suffix if self.registry.is_arnold_type(node.node_type)
+                      else "%s_%s_%s" % (material_name, label, suffix))
+            intents.append(Intent(uid, wanted, "Upstream shader node"))
         # Only rename SGs with an unambiguous connection to this material.
         for sg in cmds.listConnections(shader, type="shadingEngine", source=False, destination=True) or []:
             uid = self.scene.uid_for(sg)
@@ -828,9 +873,9 @@ class Engine:
             if len(groups[node.bare]) > 1:
                 problems.append("Duplicate global short name (%d nodes)" % len(groups[node.bare]))
             suffix = self.registry.suffix_for(node)
-            # A shape's naming contract is <transform>Shape, not <transform>_geo.
+            # Ordinary shapes use <transform>Shape; Arnold shapes use full types.
             is_shape = node.dag and node.node_type not in ("transform", "joint", "ikHandle", "dagContainer")
-            if suffix and not is_shape:
+            if suffix and (not is_shape or self.registry.is_arnold_type(node.node_type)):
                 expected = "_" + suffix
                 if not node.bare.endswith(expected):
                     problems.append("Expected suffix " + expected)
@@ -1296,7 +1341,8 @@ if QtWidgets is not None:
             path = _config_path()
             msg = ("Suffix mappings are stored in:\n\n%s\n\n"
                    "Edit this JSON file to add custom node types and suffixes, "
-                   "then click Reload Registry. Existing keys override defaults.\n\n"
+                   "then click Reload Registry. Arnold nodes always use their full Maya node type "
+                   "(for example oak_aiColorCorrect), including with older registries.\n\n"
                    "Changes take effect after reloading.") % path
             dialog = QtWidgets.QMessageBox(self)
             dialog.setWindowTitle("Suffix Registry")

@@ -1,129 +1,158 @@
-# maya-scripts
+# Xaia Tools for Maya
 
-A collection of small but useful Python scripts for Autodesk Maya.
+An installable Maya module with a **Xaia Tools** menu, organized artist tools,
+and a clipboard shared between Maya sessions on the same computer.
 
-## About
+## Install
 
-This repository contains various utility scripts designed to streamline common workflows and automate tasks in Maya. Whether you're optimizing your modeling pipeline, automating repetitive tasks, or setting up Arnold rendering, these scripts help save time and improve efficiency.
+Clone or download this repository to a permanent folder. In Maya, drag
+`install.py` into a viewport, or run this in the Python Script Editor:
 
-## Scripts
+```python
+import runpy
+runpy.run_path(r"D:\GitHub\maya-scripts\install.py", run_name="__main__")
+```
 
-### **arnold_path_resolver_v1_1.py**
-Resolves Arnold texture paths and handles path remapping. Useful for managing texture references across different project directories or when moving assets between locations. Provides utilities to update and consolidate texture file paths in Arnold shader networks.
+Change the path if you installed elsewhere. Installation writes only
+`XaiaTools.mod` into your Maya user `modules` directory, pointing at this checkout.
+It also opens the menu in the current session. The module's own deferred
+`userSetup.py` creates the menu on subsequent starts; your existing startup
+files and Maya.env are not overwritten. Existing module descriptors are backed
+up before replacement. Startup scripts must be enabled in Maya's preferences.
 
-### **circular_ramp_creator.py**
-Creates circular ramp texture nodes with alternating black and white concentric rings. Features include:
-- Configurable number of circles (black+white pairs)
-- Color randomization with optional hue tints
-- Thickness randomization for varied band widths
-- Interpolation mode selection (None, Linear, Smooth, Spline)
-- Optional direct assignment to selected meshes via Lambert shader
-- Interactive UI with seed control for reproducible randomness
+Run the installer snippet in each **already-open** Maya session. After that,
+use the top-level **Xaia Tools** menu. Updates are pulled into this checkout;
+restart Maya after updating Python code. Rebuild Menu is useful after a menu
+was removed, but does not reload existing tool modules.
 
-### **mat_to_group.py**
-Automatically organizes selected meshes into groups based on their assigned materials. Creates a material hierarchy under each object's top-level group, making it easy to manage and organize complex scenes by material assignment. Useful for managing large asset trees.
+Manual module install: copy `XaiaTools.mod` to a Maya module search directory
+and replace `.` on its first line with this repository's absolute path.
 
-### **maya_frame_overlay.py**
-Non-destructive viewport framing overlay for Maya with PySide2 or PySide6. Uses the current render resolution and camera overscan to draw alternate framing inside the render frame without changing scene settings. Features include:
-- Landscape, portrait, square, custom, and Golden Ratio (1.618:1) framing presets
-- Composition dropdown: None, Rule of thirds, Golden Ratio Grid, Golden Spiral, Golden Triangles, or Diagonal Method
-- Independent Center marker, Action Safe (90%), and Title Safe (80%) toggles
-- Guides clipped to the selected framing rectangle for every aspect ratio
-- Adjustable framing matte, render-frame display, and attachment to the active viewport
+Uninstall: remove the installed `XaiaTools.mod` and restart Maya. To remove
+only the current menu, run `from xaia_tools import menu; menu.remove()`.
 
-Run the script in Maya's Python Script Editor to open the tool, or import the module from your Maya scripts folder. Call `maya_frame_overlay.show_framing_window()` to reopen it.
+## Menu
 
-### **materials_to_object_set.py**
-Collects all materials assigned to selected meshes (or groups) into a Maya Object Set. Includes an interactive UI to:
-- Scan selected geometry or groups
-- Collect unique materials (excluding Maya defaults)
-- Create a named Object Set containing all found materials
-- Display collection results with material details
+| Group | Tools |
+| --- | --- |
+| Session Clipboard | Copy Selection, Paste into This Session, Clipboard Window |
+| Modeling | Quad Patch |
+| Curves | Text to Curves, Arnold Curve Rendering |
+| Shading & Materials | Bulk Arnold Material Editor, Convert Shaders to Arnold, Circular Ramp Creator, Collect Materials into Object Set |
+| Arnold | Stand-in Viewport Modes, Subdivision Manager, Stand-in & Texture Path Resolver |
+| Scene & Naming | Studio Renamer, Group Selected Meshes by Material, Remove Non-default Namespaces |
+| Viewport | Framing & Composition Overlay |
 
-### **quad_patch.py**
-Smart hole-patching utility for polygonal meshes. Intelligently detects the geometry of a hole boundary and creates a clean quad-based patch surface. Features:
-- Adaptive edge loop analysis with angle detection
-- Automatic corner vertex identification
-- Handles both open and closed edge loops
-- Creates smooth birail surfaces for seamless patching
-- UI with toggle buttons for quick access
+Menu entries import tools lazily. Starting Maya and rebuilding the menu do
+not load Arnold or run scene cleanup actions. The namespace and grouping
+commands act on the scene when clicked; other entries open their respective
+windows. Existing behavior of those tools is retained.
 
-### **remove_name_spaces.py**
-Removes all non-default namespaces from the Maya scene by merging their contents into the root namespace. Useful when cleaning up imported assets or consolidating references. Preserves Maya's default "UI" and "shared" namespaces.
+## Copy in one session, paste in another
 
-### **render_curves.py**
-Arnold curves utility with an interactive PySide2 UI for configuring NURBS curves for rendering:
-- Toggle "Render Curve" on all curve shapes
-- Assign custom curve shaders (creates aiStandardSurface shaders)
-- Configure sample rate and curve width with presets
-- Three shader assignment modes: all same shader, per-similar-name, or per-group
-- Automatic bright color generation for visual distinction
-- Supports both all curves and selected curves workflows
+1. In the source Maya, select whole objects, groups, or dependency nodes.
+2. Choose **Xaia Tools > Session Clipboard > Copy Selection**.
+3. In the destination Maya, choose **Paste into This Session**.
 
-### **sh_to_aiStandardSurface.py**
-Converts non-Arnold shaders (Lambert, Phong, Blinn, etc.) to aiStandardSurface with attribute mapping and connection preservation. Features include:
-- Convert selected shaders or all assigned shaders in the scene
-- Intelligent attribute mapping (color → baseColor, transparency → opacity, etc.)
-- Automatic texture color space assignment based on file paths (_d* = sRGB, others = Raw)
-- Safe handling of shared textures (creates localized copies when needed)
-- Comprehensive logging and undo support
-- Interactive UI for batch conversions
+The clipboard exports a Maya ASCII snapshot with hierarchy, materials,
+construction history, animation and related dependencies. Source selection,
+scene filename and modified state are preserved. Components and attribute
+selections are rejected; select whole objects instead.
 
-### **text_to_curve.py**
-Converts text into NURBS curves for use in scenes. Features include:
-- Multi-line text support with automatic vertical stacking
-- Custom font selection via system font dialog
-- Configurable line spacing
-- Automatic pivot centering and transform freezing
-- Groups output curves for organization
-- Simple PySide2 UI with intuitive text editor
+Paste creates independent objects under a unique `xaiaPaste_001` namespace
+(and subsequent numbers), keeps target frame rate and playback range, and
+selects the imported hierarchy roots. Existing same-named objects are preserved.
+Script-node execution is disabled during import. Required node plugins must
+be available in the destination Maya; use compatible Maya/plugin versions.
 
-## Features
+**Undo limitation:** Maya's scene import clears earlier undo history. The
+clipboard plugin makes the latest paste undoable/redoable, but does not restore
+history preceding an import. Undo leaves an empty paste namespace reserved so
+redo can restore the imported graph. Different frame rates preserve animation
+in time, so key positions can become fractional in the destination frame rate.
 
-- Lightweight Python scripts for quick integration
-- Most scripts include interactive UIs for ease of use
-- Arnold rendering support (curves, shader conversion, path resolution)
-- Material and asset organization utilities
-- Texture and shader management tools
-- Designed for Maya 2017+ (PySide2 compatible)
-- Compatible with Python 2.7 and Python 3.x
+Textures, stand-in ASS files, simulations and other external dependencies are
+not embedded or copied. They must remain accessible to the destination Maya;
+relative asset paths require the appropriate Maya project/workspace.
 
-## Installation
+Clipboard files live in `<Maya user directory>/xaia_tools/clipboard`, shared
+across Maya versions. Each export has an immutable unique filename and the
+latest snapshot is published atomically, so failed/empty copies do not replace
+the last successful copy. Concurrent copies use the last successfully published
+snapshot. Old snapshots remain on disk; remove them manually when no Maya
+session needs them. To choose a different location, set `XAIA_CLIPBOARD_DIR`
+to the same directory for both sessions before launching Maya.
 
-1. Clone this repository to your local machine:
-   ```bash
-   git clone https://github.com/Xaia/maya-scripts.git
-   ```
+The clipboard window displays the last copy's source scene, Maya version,
+objects and time. Use Refresh to see a copy made in another session. This is
+an object clipboard, separate from Windows text/image clipboard contents.
 
-2. Copy the scripts to your Maya scripts folder:
-   - **Windows**: `%USERPROFILE%\Documents\maya\<version>\scripts`
-   - **macOS**: `~/Library/Preferences/Autodesk/maya/<version>/scripts`
-   - **Linux**: `~/maya/<version>/scripts`
+Python API:
 
-3. Restart Maya or reload the scripts module.
+```python
+from xaia_tools import session_clipboard
+session_clipboard.copy_selection()  # source session
+session_clipboard.paste()           # destination session
+```
 
-## Usage
+## Arnold tools added here
 
-Each script can be run from Maya's Script Editor or imported as a Python module. Most scripts launch an interactive UI when executed. Simply copy the desired script to the Maya Script Editor and run it, or add it to your shelf for quick access.
+**Bulk Arnold Material Editor:** Check only the settings you want to apply to
+materials on selected meshes, groups or faces. Supports 51 settings in the
+installed MtoA version. Shared materials also affect unselected objects using
+them. Texture inputs are preserved by default; explicit replacement disconnects
+them. Locked and referenced materials are skipped. One undo step per apply.
 
-## Requirements
+**Stand-in Viewport Modes:** Selected to Shaded, Selected to Bounding Box,
+and ALL in scene to Bounding Box. Multiple selected stand-ins and groups are
+supported. Locked/connected settings are skipped. Each action is undoable.
 
-- Autodesk Maya 2017+ (for PySide2 support in UI scripts)
-- Python 2.7 or Python 3.x depending on your Maya version
-- Arnold plugin for Maya (required for Arnold-specific scripts)
+See [Studio Renamer documentation](maya_studio_renamer/README.md) for its naming
+workflow, registry and validation tools. The path resolver retains its ASS-file
+backup behavior; the viewport overlay retains its non-destructive guides.
 
-## Contributing
+## Layout and compatibility
 
-Contributions are welcome! Feel free to submit pull requests or open issues for bug reports and feature requests.
+```text
+XaiaTools.mod                Maya module descriptor
+install.py                   Drag/drop and Script Editor installer
+scripts/userSetup.py         Deferred menu startup (skips batch)
+scripts/xaia_tools/menu.py    Grouped tool registry and lazy launchers
+scripts/xaia_tools/session_clipboard.py
+scripts/xaia_tools/clipboard_command.py  Undoable paste command plugin
+scripts/xaia_tools/tools/     Canonical implementations of all artist tools
+*.py                         Compatibility launchers for old root paths
+maya_studio_renamer/          Existing documentation, config example and tests
+ tests/                      Native and GUI integration checks
+```
 
-## License
+Existing root script paths and Studio Renamer's legacy import path remain
+available through compatibility launchers. Run them as files or explicitly
+call their documented UI functions after import. Imports no longer open
+windows or perform scene operations. New integrations should import from
+`xaia_tools.tools`, for example:
 
-Feel free to use these scripts as you like.
+```python
+from xaia_tools.tools import arnold_bulk_edit
+arnold_bulk_edit.show()
+```
 
-## Support
+The module requires Python 3 (Maya 2022+). Maya 2026 / PySide6 is the tested
+configuration; Qt tools also retain PySide2 fallbacks for earlier Python 3
+Maya releases. Arnold-specific tools require MtoA. No pip packages are needed.
+The Quad Patch author's original attribution is retained in its source.
 
-For questions or issues, please open an issue on the GitHub repository.
+## Validation
 
----
+See [tests/README.md](tests/README.md) for native Maya, separate-process clipboard,
+GUI-startup and existing renamer checks. Test scene files and logs stay in
+`tests/results/`, which is excluded from Git.
 
-**Happy scripting!** 🎨
+Maya integration references: [module description files](https://help.autodesk.com/cloudhelp/2026/ENU/Maya-DEVHELP/files/Distributing-Maya-Plug-ins/DistributingUsingModules/Maya_DEVHELP_Distributing_Maya_Plug_ins_DistributingUsingModules_ModuleDescriptionFiles_html.html),
+[file import/export](https://help.autodesk.com/cloudhelp/2026/ENU/Maya-Tech-Docs/CommandsPython/file.html).
+
+## License and support
+
+Existing repository permission: feel free to use these scripts as you like.
+Preserve third-party author notices. Report issues in
+[the GitHub repository](https://github.com/Xaia/maya-scripts/issues).

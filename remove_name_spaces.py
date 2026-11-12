@@ -1,25 +1,12 @@
-import maya.cmds as cmds
-
-def remove_all_namespaces():
-    """
-    Removes all non-default namespaces in the Maya scene by merging their contents
-    into the root namespace.
-    """
-    # Get a list of all namespaces in the scene
-    namespaces = cmds.namespaceInfo(listOnlyNamespaces=True) or []
-    
-    # Define namespaces that should not be removed
-    default_namespaces = ['UI', 'shared']
-    
-    for ns in namespaces:
-        if ns in default_namespaces:
-            continue
-        try:
-            # Merge all nodes from the namespace into the root and remove the namespace
-            cmds.namespace(removeNamespace=ns, mergeNamespaceWithRoot=True)
-            print("Removed namespace: {}".format(ns))
-        except Exception as e:
-            print("Failed to remove namespace '{}': {}".format(ns, e))
-
-# Run the function
-remove_all_namespaces()
+"""Compatibility launcher; implementation lives in xaia_tools.tools."""
+import importlib
+import sys
+from pathlib import Path
+_scripts = str(Path(__file__).resolve().parents[0] / "scripts")
+if _scripts not in sys.path:
+    sys.path.insert(0, _scripts)
+_tool = importlib.import_module("xaia_tools.tools.remove_name_spaces")
+if __name__ == "__main__":
+    _tool.remove_all_namespaces()
+else:
+    sys.modules[__name__] = _tool
